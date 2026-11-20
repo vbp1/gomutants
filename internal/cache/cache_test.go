@@ -471,17 +471,25 @@ func TestLoad_SchemaVersionMismatch(t *testing.T) {
 
 // TestLoad_SchemaVersionPinned hardcodes the current on-disk schema number
 // so that bumping or nudging the SchemaVersion constant without intent is
-// caught: a cache written at literal version 12 must load under the current
-// constant. (Pins SchemaVersion == 12; kills off-by-one mutations of it.)
+// caught: a cache written at literal version 13 must load under the current
+// constant. (Pins SchemaVersion == 13; kills off-by-one mutations of it.)
 func TestLoad_SchemaVersionPinned(t *testing.T) {
-	if SchemaVersion != 12 {
+	if SchemaVersion != 13 {
 		t.Fatalf("SchemaVersion = %d; update this pinned test and the on-disk fixture deliberately", SchemaVersion)
 	}
 	p := filepath.Join(t.TempDir(), "cache.json")
-	mustWrite(t, p, fmt.Sprintf(`{"schema_version":12,"go_module":"%s","tool_version":"%s","entries":[{"rel_file":"x.go","status":"KILLED"}]}`, testModule, testVersion))
+	mustWrite(t, p, fmt.Sprintf(`{"schema_version":13,"go_module":"%s","tool_version":"%s","entries":[{"rel_file":"x.go","status":"KILLED"}]}`, testModule, testVersion))
 	c := Load(p, testModule, testVersion, "", "", "")
 	if len(c.Entries) != 1 {
-		t.Fatalf("a literal-version-12 cache must load under SchemaVersion=12, got %d entries", len(c.Entries))
+		t.Fatalf("a literal-version-13 cache must load under SchemaVersion=13, got %d entries", len(c.Entries))
+	}
+}
+
+func TestLoad_V12CacheRejected(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "cache.json")
+	mustWrite(t, p, fmt.Sprintf(`{"schema_version":12,"go_module":"%s","tool_version":"%s","entries":[{"rel_file":"x.go","status":"KILLED"}]}`, testModule, testVersion))
+	if c := Load(p, testModule, testVersion, "", "", ""); len(c.Entries) != 0 {
+		t.Fatal("v12 verdicts lack dependency hashes and must be discarded")
 	}
 }
 

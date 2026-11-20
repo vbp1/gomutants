@@ -544,3 +544,92 @@ func TestIncrementalCacheInvalidatesOnExcludedSuiteEdit(t *testing.T) {
 			probe.ID, got.Status, warm.MutantsCached)
 	}
 }
+
+// A test-free adapter can change whether an unchanged consumer kills a
+// mutant. Its sources must key that verdict, but unrelated sources must not.
+func TestIntegrationCacheInvalidatesOnTransitiveDependencyEdit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod":        "module transit\n\ngo 1.26\n",
+		"leaf/value.go": "package leaf\n\nfunc Eligible(value int) bool {\n\treturn value > 10\n}\n",
+		"adapter/check.go": "package adapter\n\nimport \"transit/leaf\"\n\n" +
+			"func Check(value int) bool { return leaf.Eligible(value) }\n",
+		"consumer/check_test.go": "package consumer\n\nimport (\"testing\"; \"transit/adapter\")\n\n" +
+			"func TestBoundary(t *testing.T) { if adapter.Check(10) || !adapter.Check(11) { t.Fatal(\"wrong\") } }\n",
+		"unrelated/value.go": "package unrelated\n\nconst Value = 1\n",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := []string{"-w", "2", "--integration", "--only", "CONDITIONALS_BOUNDARY",
+		"--cache", filepath.Join(dir, "cache.json"), "-o", filepath.Join(dir, "report.json"), "./leaf"}
+	cold := runInDir(t, dir, args)
+	if cold.MutantsKilled != 1 {
+		t.Fatalf("cold killed=%d, want 1", cold.MutantsKilled)
+	}
+	// A source edit outside the test binary's dependency closure must not
+	// turn incremental invalidation into repository-wide invalidation.
+	if err := os.WriteFile(filepath.Join(dir, "unrelated/value.go"), []byte("package unrelated\n\nconst Value = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	warm := runInDir(t, dir, args)
+	if warm.MutantsCached != 1 || warm.MutantsKilled != 1 {
+		t.Fatalf("unrelated edit: cached=%d killed=%d, want 1 each", warm.MutantsCached, warm.MutantsKilled)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "adapter/check.go"), []byte(
+		"package adapter\n\nimport \"transit/leaf\"\n\n"+
+			"func Check(value int) bool { return leaf.Eligible(value) && value != 10 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed := runInDir(t, dir, args)
+	if changed.MutantsCached != 0 || changed.MutantsLived != 1 {
+		t.Fatalf("adapter edit: cached=%d lived=%d, want 0 and 1", changed.MutantsCached, changed.MutantsLived)
+	}
+}
+
+func TestIntegrationCacheInvalidatesNotViableOnDependencyEdit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod":       "module typedep\n\ngo 1.26\n",
+		"dep/value.go": "package dep\n\nfunc Value() string { return \"x\" }\n",
+		"leaf/value.go": "package leaf\n\nimport \"typedep/dep\"\n\n" +
+			"func Combine() any { return dep.Value() + dep.Value() }\n",
+		"leaf/value_test.go": "package leaf\n\nimport (\"testing\"; \"typedep/dep\")\n\n" +
+			"func TestCombine(t *testing.T) { if Combine() != dep.Value() + dep.Value() { t.Fatal(\"wrong\") } }\n",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := []string{"-w", "2", "--only", "ARITHMETIC_BASE", "--cache", filepath.Join(dir, "cache.json"),
+		"-o", filepath.Join(dir, "report.json"), "./leaf"}
+	if cold := runInDir(t, dir, args); cold.MutantsNotViable != 1 {
+		t.Fatalf("cold not viable=%d, want 1", cold.MutantsNotViable)
+	}
+	coverageKey := loadCacheFile(t, filepath.Join(dir, "cache.json")).CoverageKey
+	if err := os.WriteFile(filepath.Join(dir, "dep/value.go"), []byte("package dep\n\nfunc Value() int { return 1 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	warm := runInDir(t, dir, args)
+	if warm.MutantsCached != 0 || warm.MutantsKilled != 1 {
+		t.Fatalf("dependency type edit: cached=%d killed=%d, want 0 and 1", warm.MutantsCached, warm.MutantsKilled)
+	}
+	if loadCacheFile(t, filepath.Join(dir, "cache.json")).CoverageKey == coverageKey {
+		t.Fatal("dependency edit must invalidate the coverage profile too")
+	}
+}

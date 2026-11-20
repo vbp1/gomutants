@@ -602,7 +602,7 @@ func (mr *mutationRun) buildTestMap(ctx context.Context) error {
 
 // applyCache replays prior verdicts for mutants whose package and covering
 // tests are unchanged since the cached run.
-func (mr *mutationRun) applyCache() {
+func (mr *mutationRun) applyCache(dependencies *cacheDependencies) {
 	// Apply incremental-analysis cache (opt-in via --cache). Hits
 	// flip the mutant from Pending to its prior terminal status, which
 	// makes the runner's Pending-only filter naturally skip them.
@@ -623,7 +623,7 @@ func (mr *mutationRun) applyCache() {
 	testIndex := cache.BuildTestIndex(slices.Concat(mr.rDirs, suiteDirs(mr.testMap)))
 
 	crossPkg := mr.cfg.Integration || mr.cfg.CoverPkg != ""
-	mr.testFilesFor = testFilesResolver(testIndex, mr.testMap, crossPkg)
+	mr.testFilesFor = testFilesResolver(testIndex, mr.testMap, crossPkg, dependencies.tests)
 
 	// --run-mutant-id skips the lookup, not the resolver above: the
 	// point of naming one mutant is to measure it again after editing

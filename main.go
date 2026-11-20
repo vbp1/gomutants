@@ -298,6 +298,15 @@ func run(ctx context.Context, args []string) error {
 	}
 	defer func() { _ = os.RemoveAll(mr.tmpDir) }()
 
+	var dependencies *cacheDependencies
+	if mr.loadedCache != nil {
+		dependencies, err = cacheDependencyFiles(ctx, mr.projectDir, mr.coveragePatterns, mr.cfg.Tags, mr.cfg.TestFlagFields())
+		if err != nil {
+			return err
+		}
+		mr.hasher.SetPackageDependencies(dependencies.packages)
+		mr.hasher.SetCoverageDependencies(dependencies.coverage)
+	}
 	if err := mr.collectCoverage(ctx); err != nil {
 		return err
 	}
@@ -326,7 +335,7 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 
-	mr.applyCache()
+	mr.applyCache(dependencies)
 
 	mr.runMutants(ctx)
 	// An interrupt during the mutant or equivalence phase leaves mutants
@@ -624,8 +633,9 @@ func embedFilesByDir(pkgs []discover.Package) map[string][]string {
 // --coverpkg — for a test outside the mutant's package to record coverage
 // on it at all; without one, TestsFor's package-agnostic names are the
 // only way a foreign directory can turn up, and expanding on them would
-// fold unrelated packages' sources into tests_hash.
-func testFilesResolver(testIndex *cache.TestIndex, testMap *coverage.TestMap, crossPkg bool) cache.TestFilesForFn {
+// fold unrelated packages' sources into tests_hash. dependencies adds each
+// suite's forward inputs, including packages without their own tests.
+func testFilesResolver(testIndex *cache.TestIndex, testMap *coverage.TestMap, crossPkg bool, dependencies map[string][]string) cache.TestFilesForFn {
 	return func(m mutator.Mutant) []string {
 		var names []string
 		if testMap != nil {
@@ -633,11 +643,13 @@ func testFilesResolver(testIndex *cache.TestIndex, testMap *coverage.TestMap, cr
 		}
 		dir := filepath.Dir(m.File)
 		files := testIndex.CoveringFiles(dir, names, crossPkg)
+		files = append(files, dependencies[m.Pkg]...)
 		// A survivor is re-checked against every package suite that can
 		// kill it, so every file of them decides the verdict. The own
 		// package is skipped for the reason CoveringFiles skips it: its
 		// sources are already the production dimension.
 		for _, p := range testMap.SuitePkgs(m.Pkg) {
+			files = append(files, dependencies[p.ImportPath]...)
 			if p.Dir != dir {
 				files = append(files, testIndex.PackageFiles(p.Dir)...)
 			}

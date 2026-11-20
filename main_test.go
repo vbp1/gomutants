@@ -2151,14 +2151,14 @@ func TestTestFilesResolverAddsSuitePackages(t *testing.T) {
 
 	suites := []coverage.Package{{ImportPath: "m/calc", Dir: target}, {ImportPath: "m/app", Dir: importer}}
 	cross := coverage.NewTestMapForTesting(nil, nil).WithSuitesForTesting(true, nil, suites...)
-	if got := base(testFilesResolver(ti, cross, true)(m)); !slices.Equal(got, []string{"app.go", "app_test.go", "calc_test.go"}) {
+	if got := base(testFilesResolver(ti, cross, true, nil)(m)); !slices.Equal(got, []string{"app.go", "app_test.go", "calc_test.go"}) {
 		t.Errorf("linking importer: files = %v, want the importer's files plus the own test file", got)
 	}
 	own := coverage.NewTestMapForTesting(nil, nil).WithSuitesForTesting(false, nil, suites...)
-	if got := base(testFilesResolver(ti, own, false)(m)); !slices.Equal(got, []string{"calc_test.go"}) {
+	if got := base(testFilesResolver(ti, own, false, nil)(m)); !slices.Equal(got, []string{"calc_test.go"}) {
 		t.Errorf("own-package coverage: files = %v, want only the own test file", got)
 	}
-	if got := base(testFilesResolver(ti, nil, false)(m)); !slices.Equal(got, []string{"calc_test.go"}) {
+	if got := base(testFilesResolver(ti, nil, false, nil)(m)); !slices.Equal(got, []string{"calc_test.go"}) {
 		t.Errorf("nil map: files = %v, want only the own test file", got)
 	}
 }

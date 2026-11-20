@@ -91,7 +91,9 @@ import (
 //	    its suite, so v11 TIMED OUT entries can be mutants that now live or
 //	    are killed. A run stopped at the cap after a test had reported a
 //	    failure is now KILLED too.
-const SchemaVersion = 12
+//	v13: package and test keys include their forward dependencies. An edit
+//	    there can change a verdict, including whether a mutant compiles.
+const SchemaVersion = 13
 
 // I/O syscalls used by Save are exposed as package-level function
 // variables so tests can inject failures into each error path
@@ -253,10 +255,23 @@ func HashFile(absPath string) (string, error) {
 // Hasher memoizes per-file hashes within a single run. Not safe for
 // concurrent use — the pipeline calls Lookup/Update sequentially.
 type Hasher struct {
-	files    map[string]string   // absPath → hex sha256
-	dirs     map[string]string   // package dir → hex sha256 over its non-test .go files
-	srcCache map[string][]byte   // optional in-memory source files (from discover.PreReadFiles)
-	embeds   map[string][]string // package dir → dir-relative //go:embed file paths
+	files         map[string]string   // absPath → hex sha256
+	dirs          map[string]string   // package dir → hex sha256 over its non-test .go files
+	srcCache      map[string][]byte   // optional in-memory source files (from discover.PreReadFiles)
+	embeds        map[string][]string // package dir → dir-relative //go:embed file paths
+	depFiles      map[string][]string // package dir → absolute production dependency files
+	coverageFiles []string            // forward inputs of the coverage scope
+}
+
+// SetPackageDependencies supplies the forward production inputs for pkg_hash.
+func (h *Hasher) SetPackageDependencies(files map[string][]string) {
+	h.depFiles = files
+	clear(h.dirs)
+}
+
+// SetCoverageDependencies supplies inputs outside the instrumented packages.
+func (h *Hasher) SetCoverageDependencies(files []string) {
+	h.coverageFiles = files
 }
 
 // NewHasher returns an empty per-run hasher. If srcCache is non-nil, it
@@ -483,7 +498,8 @@ func (h *Hasher) embedFrames(pkgDirs []string) ([]string, error) {
 
 // HashPkgFiles returns a stable hex-encoded sha256 over every non-test .go
 // file directly inside dir, followed by every file the package's production
-// //go:embed directives pull in. It is the per-mutant key's dependency
+// //go:embed directives pull in, and the forward inputs supplied through
+// SetPackageDependencies. It is the per-mutant key's dependency
 // dimension: a mutant's verdict is decided by the whole package it compiles
 // into, not just the file the mutation lives in, so a sibling file changing
 // must invalidate that mutant even when its own file is byte-identical.
@@ -532,6 +548,11 @@ func (h *Hasher) HashPkgFiles(dir string) (string, error) {
 	for _, f := range frames {
 		fmt.Fprint(hh, f)
 	}
+	dependencyHash, err := h.HashTestFiles(h.depFiles[dir])
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(hh, "deps:%s|", dependencyHash)
 	v := hex.EncodeToString(hh.Sum(nil))
 	h.dirs[dir] = v
 	return v, nil
@@ -628,6 +649,11 @@ func (h *Hasher) HashCoverageInputs(pkgDirs []string, projectDir, coverPkg, tags
 	fmt.Fprintf(hh, "testflags:%d:%s|", len(testFlags), testFlags)
 	fmt.Fprintf(hh, "toolchain:%d:%s|", len(toolchain), toolchain)
 	fmt.Fprintf(hh, "env:%d:%s|", len(envSnapshot), envSnapshot)
+	dependencies, err := h.HashTestFiles(h.coverageFiles)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(hh, "deps:%s|", dependencies)
 
 	return hex.EncodeToString(hh.Sum(nil)), nil
 }
